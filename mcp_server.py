@@ -6,6 +6,9 @@ Provides Claude with direct access to x32dbg debugging capabilities
 
 import os
 import sys
+import time
+import logging
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 import requests
 from fastmcp import FastMCP
@@ -18,6 +21,41 @@ X64DBG_URL = os.getenv("X64DBG_URL", "http://127.0.0.1:8888")
 REQUEST_TIMEOUT = int(os.getenv("X64DBG_TIMEOUT", "30"))  # Default 30s, configurable via env
 
 #=============================================================================
+# File Logger (rotating, size-bounded)
+#
+# Writes every plugin HTTP call with timing + errors/{status} to a fixed-size
+# rotating file so hangs like the run/pause wedge are diagnosable without the
+# x32dbg GUI log. Configurable via env:
+#   X64DBG_LOG           path (default: <repo>/logs/mcp_server.log)
+#   X64DBG_LOG_LEVEL     DEBUG | INFO | WARNING | ERROR  (default INFO)
+#   X64DBG_LOG_SIZE      MB per file (default 5)
+#   X64DBG_LOG_BACKUPS   rotated files kept (default 5)
+#=============================================================================
+
+def _setup_logger() -> logging.Logger:
+    default_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "mcp_server.log")
+    log_path = os.path.abspath(os.path.expanduser(os.getenv("X64DBG_LOG", default_path)))
+    log_level = getattr(logging, os.getenv("X64DBG_LOG_LEVEL", "INFO").upper(), logging.INFO)
+    max_bytes = max(1, int(os.getenv("X64DBG_LOG_SIZE", "5"))) * 1024 * 1024
+    backup_count = int(os.getenv("X64DBG_LOG_BACKUPS", "5"))
+
+    logger = logging.getLogger("x32dbg_mcp")
+    logger.setLevel(log_level)
+    if not logger.handlers:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(handler)
+        logger.info("=== log session started level=%s file=%s max=%dMB x%d ===",
+                    logging.getLevelName(log_level), log_path, max_bytes // (1024 * 1024), backup_count)
+    return logger
+
+
+log = _setup_logger()
+
+#=============================================================================
 # HTTP Communication Layer
 #=============================================================================
 
@@ -27,25 +65,37 @@ class DebuggerError(Exception):
 
 def api_request(endpoint: str, params: Optional[Dict[str, str]] = None) -> Any:
     """Make HTTP request to x32dbg plugin and return parsed response"""
+    _t0 = time.perf_counter()
+    _q = "" if not params else "?" + "&".join(f"{k}={v}" for k, v in params.items())
+    _url = f"{X64DBG_URL}{endpoint}{_q}"
+    log.debug("REQ %s%s", endpoint, _q)
     try:
-        url = f"{X64DBG_URL}{endpoint}"
-        response = requests.get(url, params=params or {}, timeout=REQUEST_TIMEOUT)
+        response = requests.get(_url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
 
         # Try to parse as JSON first
         try:
-            return response.json()
+            result = response.json()
         except ValueError:
-            # Return text if not JSON
-            return response.text.strip()
+            result = response.text.strip()
+
+        elapsed = time.perf_counter() - _t0
+        log.info("HTTP %s%s -> %d  %.1fms", endpoint, _q, response.status_code, elapsed * 1000)
+        if elapsed > 1.0:
+            log.warning("SLOW %s%s took %.1fs (>1s, %ds budget)", endpoint, _q, elapsed, REQUEST_TIMEOUT)
+        return result
 
     except requests.exceptions.Timeout:
+        log.error("TIMEOUT %s%s  hung %.1fs (budget %ds)", endpoint, _q, time.perf_counter() - _t0, REQUEST_TIMEOUT)
         raise DebuggerError("Request timed out - is x32dbg running?")
     except requests.exceptions.ConnectionError:
+        log.error("CONNFAIL %s%s  %.1fs", endpoint, _q, time.perf_counter() - _t0)
         raise DebuggerError("Cannot connect to x32dbg - is the plugin loaded?")
     except requests.exceptions.HTTPError as e:
+        log.error("HTTPERR %s%s -> %s", endpoint, _q, e.response)
         raise DebuggerError(f"HTTP error {e.response.status_code}: {e.response.text}")
     except Exception as e:
+        log.error("EXC %s%s -> %s", endpoint, _q, repr(e))
         raise DebuggerError(f"Unexpected error: {str(e)}")
 
 #=============================================================================
@@ -269,10 +319,16 @@ def step_out() -> Dict[str, Any]:
 def run_process() -> Dict[str, Any]:
     """Resume execution of the debugged process
 
+    If the process is already running, this is a no-op and reports so, rather
+    than issuing a run command that can wedge the debugger HTTP server.
+
     Returns:
-        Dictionary indicating success
+        Dict indicating success (or that the process was already running)
     """
     try:
+        status = api_request("/status")
+        if status.get("running"):
+            return {"success": True, "skipped": True, "message": "Process is already running"}
         return api_request("/debug/run")
     except DebuggerError as e:
         return {"success": False, "error": str(e)}
@@ -281,10 +337,16 @@ def run_process() -> Dict[str, Any]:
 def pause_process() -> Dict[str, Any]:
     """Pause execution of the debugged process
 
+    If the process is already paused, this is a no-op and reports that, rather
+    than issuing a request that can stall the debugger server.
+
     Returns:
-        Dictionary indicating success
+        Dict indicating success (or "skipped" if already paused)
     """
     try:
+        status = api_request("/status")
+        if not status.get("running"):
+            return {"success": True, "skipped": True, "message": "Process is already paused"}
         return api_request("/debug/pause")
     except DebuggerError as e:
         return {"success": False, "error": str(e)}
@@ -949,10 +1011,14 @@ if __name__ == "__main__":
     # Check if x32dbg is reachable
     try:
         status = api_request("/status")
+        log.info("Connected to x32dbg (arch=%s, debugging=%s, running=%s)",
+                 status.get('arch', 'unknown'), status.get('debugging'), status.get('running'))
         print(f"✅ Connected to x32dbg (arch: {status.get('arch', 'unknown')})", file=sys.stderr)
     except Exception as e:
+        log.warning("x32dbg unreachable on startup: %s", e)
         print(f"⚠️  Warning: Cannot connect to x32dbg: {e}", file=sys.stderr)
         print(f"   Make sure x32dbg is running with the MCP plugin loaded!", file=sys.stderr)
 
     # Run the MCP server
+    log.info("Starting MCP stdio server")
     mcp.run()

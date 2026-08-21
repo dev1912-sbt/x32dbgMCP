@@ -24,6 +24,15 @@ wheels/
 venv/
 env/
 ENV/
+.venv/
+
+# CMake build directories
+build/
+build32/
+build64/
+
+# Runtime logs
+logs/
 
 # IDE
 .vscode/

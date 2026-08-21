@@ -8,6 +8,7 @@
 #include <sstream>
 #include <vector>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <algorithm>
 #include <iomanip>
@@ -44,10 +45,10 @@ HANDLE g_serverThread = NULL;
 bool g_running = false;
 int g_port = DEFAULT_PORT;
 SOCKET g_serverSocket = INVALID_SOCKET;
-std::mutex g_mutex;
 
 // Forward declarations
 DWORD WINAPI ServerThread(LPVOID lpParam);
+void HandleClient(SOCKET client);
 std::string ParseRegister(const std::string& name, Script::Register::RegisterEnum& reg);
 
 //=============================================================================
@@ -338,25 +339,42 @@ void HandleRequest(SOCKET client, const std::string& method, const std::string& 
         }
 
         // ===== Debug Control =====
+        // Note: These guard on DbgIsDebugging()/DbgIsRunning() so that a resume
+        // or pause issued while the debuggee is already in that state is a fast
+        // no-op. Issuing "run" while the process is already running (or "pause"
+        // while already paused) can block the x64dbg command path indefinitely,
+        // which previously wedged the single-threaded HTTP server.
         else if (path == "/debug/run") {
-            Script::Debug::Run();
-            SendResponse(client, 200, "application/json", "{\"success\":true}");
+            if (!DbgIsDebugging()) {
+                SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Not debugging any process\"}");
+            } else if (DbgIsRunning()) {
+                SendResponse(client, 200, "application/json", "{\"success\":true,\"skipped\":true,\"message\":\"Process is already running\"}");
+            } else {
+                Script::Debug::Run();
+                SendResponse(client, 200, "application/json", "{\"success\":true}");
+            }
         }
         else if (path == "/debug/pause") {
-            Script::Debug::Pause();
-            SendResponse(client, 200, "application/json", "{\"success\":true}");
+            if (!DbgIsDebugging()) {
+                SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Not debugging any process\"}");
+            } else if (!DbgIsRunning()) {
+                SendResponse(client, 200, "application/json", "{\"success\":true,\"skipped\":true,\"message\":\"Process is already paused\"}");
+            } else {
+                Script::Debug::Pause();
+                SendResponse(client, 200, "application/json", "{\"success\":true}");
+            }
         }
-        else if (path == "/debug/step") {
-            Script::Debug::StepIn();
-            SendResponse(client, 200, "application/json", "{\"success\":true}");
-        }
-        else if (path == "/debug/stepover") {
-            Script::Debug::StepOver();
-            SendResponse(client, 200, "application/json", "{\"success\":true}");
-        }
-        else if (path == "/debug/stepout") {
-            Script::Debug::StepOut();
-            SendResponse(client, 200, "application/json", "{\"success\":true}");
+        else if (path == "/debug/step" || path == "/debug/stepover" || path == "/debug/stepout") {
+            if (!DbgIsDebugging()) {
+                SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Not debugging any process\"}");
+            } else if (DbgIsRunning()) {
+                SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Must be paused to step\"}");
+            } else {
+                if (path == "/debug/step") Script::Debug::StepIn();
+                else if (path == "/debug/stepover") Script::Debug::StepOver();
+                else Script::Debug::StepOut();
+                SendResponse(client, 200, "application/json", "{\"success\":true}");
+            }
         }
 
         // ===== Breakpoint Operations =====
@@ -592,45 +610,11 @@ DWORD WINAPI ServerThread(LPVOID lpParam) {
             continue;
         }
 
-        // Read request
-        char buffer[MAX_REQUEST_SIZE];
-        int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
-        if (bytesReceived > 0) {
-            buffer[bytesReceived] = '\0';
-            std::string request(buffer);
-
-            // Parse HTTP request line
-            size_t firstLineEnd = request.find("\r\n");
-            if (firstLineEnd != std::string::npos) {
-                std::string requestLine = request.substr(0, firstLineEnd);
-
-                size_t methodEnd = requestLine.find(' ');
-                size_t urlEnd = requestLine.find(' ', methodEnd + 1);
-                if (methodEnd != std::string::npos && urlEnd != std::string::npos) {
-                    std::string method = requestLine.substr(0, methodEnd);
-                    std::string url = requestLine.substr(methodEnd + 1, urlEnd - methodEnd - 1);
-
-                    std::string path, query;
-                    size_t queryStart = url.find('?');
-                    if (queryStart != std::string::npos) {
-                        path = url.substr(0, queryStart);
-                        query = url.substr(queryStart + 1);
-                    } else {
-                        path = url;
-                    }
-
-                    auto params = ParseQuery(query);
-
-                    // Extract body
-                    size_t bodyStart = request.find("\r\n\r\n");
-                    std::string body = (bodyStart != std::string::npos) ? request.substr(bodyStart + 4) : "";
-
-                    HandleRequest(clientSocket, method, path, params, body);
-                }
-            }
-        }
-
-        closesocket(clientSocket);
+        // Handle each connection on its own worker thread so a single slow or
+        // stalled request can never wedge the accept loop (which previously made
+        // the whole MCP server unresponsive until x64dbg was restarted).
+        std::thread clientThread(HandleClient, clientSocket);
+        clientThread.detach();
     }
 
     closesocket(g_serverSocket);
@@ -638,4 +622,75 @@ DWORD WINAPI ServerThread(LPVOID lpParam) {
     WSACleanup();
 
     return 0;
+}
+
+//=============================================================================
+// Per-Connection Worker
+//=============================================================================
+
+void HandleClient(SOCKET client) {
+    // The listener is non-blocking; accepted sockets on Windows do not reliably
+    // inherit a blocking mode, so force blocking here (we bound reads with a
+    // timeout below) to avoid an early empty recv aborting valid connections.
+    u_long blocking = 0;
+    ioctlsocket(client, FIONBIO, &blocking);
+
+    // Bound the read so a client that connects without sending data cannot pin
+    // this worker thread indefinitely.
+    DWORD rcvTimeout = 5000;
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (char*)&rcvTimeout, sizeof(rcvTimeout));
+
+    // Read until the request header is complete (handles split/partial sends).
+    std::string request;
+    char tmp[4096];
+    while (request.find("\r\n\r\n") == std::string::npos && request.size() < MAX_REQUEST_SIZE * 8) {
+        int n = recv(client, tmp, sizeof(tmp), 0);
+        if (n == SOCKET_ERROR) break;
+        if (n == 0) break;
+        request.append(tmp, n);
+    }
+
+    bool parsed = false;
+    std::string method, path, body;
+    std::unordered_map<std::string, std::string> params;
+
+    if (!request.empty()) {
+        size_t firstLineEnd = request.find("\r\n");
+        if (firstLineEnd != std::string::npos) {
+            std::string requestLine = request.substr(0, firstLineEnd);
+
+            size_t methodEnd = requestLine.find(' ');
+            size_t urlEnd = requestLine.find(' ', methodEnd + 1);
+            if (methodEnd != std::string::npos && urlEnd != std::string::npos) {
+                method = requestLine.substr(0, methodEnd);
+                std::string url = requestLine.substr(methodEnd + 1, urlEnd - methodEnd - 1);
+
+                std::string pathTmp, query;
+                size_t queryStart = url.find('?');
+                if (queryStart != std::string::npos) {
+                    pathTmp = url.substr(0, queryStart);
+                    query = url.substr(queryStart + 1);
+                } else {
+                    pathTmp = url;
+                }
+
+                params = ParseQuery(query);
+
+                size_t bodyStart = request.find("\r\n\r\n");
+                body = (bodyStart != std::string::npos) ? request.substr(bodyStart + 4) : "";
+                path = pathTmp;
+                parsed = true;
+            }
+        }
+    }
+
+    if (parsed) {
+        // Each connection is handled on its own worker thread with no shared
+        // lock held across the SDK call. A single request that stalls inside
+        // the debugger SDK blocks only its own worker; other requests (notably
+        // /status) keep answering, so the server can never appear fully dead.
+        HandleRequest(client, method, path, params, body);
+    }
+
+    closesocket(client);
 }

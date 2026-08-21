@@ -196,6 +196,87 @@ std::string ParseRegister(const std::string& name, Script::Register::RegisterEnu
 }
 
 //=============================================================================
+// Breakpoint Helpers (BP_REF API for creating/editing breakpoints)
+//=============================================================================
+
+static const BP_REF* FindBpRef(BPXTYPE type, duint addr) {
+    duint count = 0;
+    BP_REF* refs = DbgFunctions()->BpRefList(&count);
+    if (!refs) return nullptr;
+    for (duint i = 0; i < count; i++) {
+        if (refs[i].type != type) continue;
+        duint bpAddr = 0;
+        if (DbgFunctions()->BpGetFieldNumber(&refs[i], bpf_address, &bpAddr) && bpAddr == addr)
+            return &refs[i];
+    }
+    return nullptr;
+}
+
+static bool ApplyBpTextField(const std::unordered_map<std::string, std::string>& params,
+                            const std::string& key, BP_FIELD field, const BP_REF* ref, bool& applied) {
+    auto it = params.find(key);
+    if (it == params.end()) return true;
+    applied = true;
+    return DbgFunctions()->BpSetFieldText(ref, field, it->second.c_str());
+}
+
+static bool ApplyBpNumberField(const std::unordered_map<std::string, std::string>& params,
+                              const std::string& key, BP_FIELD field, const BP_REF* ref, bool& applied) {
+    auto it = params.find(key);
+    if (it == params.end()) return true;
+    applied = true;
+    try {
+        return DbgFunctions()->BpSetFieldNumber(ref, field, std::stoull(it->second, nullptr, 0));
+    } catch (...) {
+        return false;
+    }
+}
+
+static bool ApplyBpBoolField(const std::unordered_map<std::string, std::string>& params,
+                            const std::string& key, BP_FIELD field, const BP_REF* ref, bool& applied) {
+    auto it = params.find(key);
+    if (it == params.end()) return true;
+    applied = true;
+    bool v = (it->second == "true" || it->second == "1" || it->second == "yes");
+    return DbgFunctions()->BpSetFieldNumber(ref, field, v ? 1 : 0);
+}
+
+static bool ApplyBpDetailFields(const std::unordered_map<std::string, std::string>& params,
+                               const BP_REF* ref) {
+    bool applied = false;
+    bool ok = true;
+    ok &= ApplyBpTextField(params, "name", bpf_name, ref, applied);
+    ok &= ApplyBpTextField(params, "break_condition", bpf_breakcondition, ref, applied);
+    ok &= ApplyBpTextField(params, "log_text", bpf_logtext, ref, applied);
+    ok &= ApplyBpTextField(params, "log_condition", bpf_logcondition, ref, applied);
+    ok &= ApplyBpTextField(params, "command_text", bpf_commandtext, ref, applied);
+    ok &= ApplyBpTextField(params, "command_condition", bpf_commandcondition, ref, applied);
+    ok &= ApplyBpTextField(params, "log_file", bpf_logfile, ref, applied);
+    ok &= ApplyBpBoolField(params, "singleshoot", bpf_singleshoot, ref, applied);
+    ok &= ApplyBpBoolField(params, "silent", bpf_silent, ref, applied);
+    return ok;
+}
+
+static BPXTYPE ParseBpTypeString(const std::string& s) {
+    if (s == "hardware") return bp_hardware;
+    if (s == "memory") return bp_memory;
+    if (s == "dll") return bp_dll;
+    if (s == "exception") return bp_exception;
+    return bp_normal;
+}
+
+static const char* BpTypeName(BPXTYPE t) {
+    switch (t) {
+        case bp_normal: return "normal";
+        case bp_hardware: return "hardware";
+        case bp_memory: return "memory";
+        case bp_dll: return "dll";
+        case bp_exception: return "exception";
+        default: return "none";
+    }
+}
+
+//=============================================================================
 // API Request Router
 //=============================================================================
 
@@ -399,7 +480,15 @@ void HandleRequest(SOCKET client, const std::string& method, const std::string& 
             }
 
             duint addr = std::stoull(addrIt->second, nullptr, 0);
-            bool success = Script::Debug::DeleteBreakpoint(addr);
+            std::string typeStr;
+            BPXTYPE btype = bp_normal;
+            if (GetParam(params, "type", typeStr))
+                btype = ParseBpTypeString(typeStr);
+
+            bool success = (btype == bp_hardware)
+                ? Script::Debug::DeleteHardwareBreakpoint(addr)
+                : Script::Debug::DeleteBreakpoint(addr);
+            if (success) GuiUpdateBreakpointsView();
 
             response << "{\"success\":" << BoolToJson(success) << "}";
             SendResponse(client, 200, "application/json", response.str());
@@ -419,19 +508,162 @@ void HandleRequest(SOCKET client, const std::string& method, const std::string& 
                         if (!firstBp) bpResponse << ",";
                         firstBp = false;
                         bpResponse << "{\"type\":" << (int)bp.type
+                                   << ",\"type_name\":\"" << BpTypeName(bp.type) << "\""
                                    << ",\"addr\":\"" << ToHex(bp.addr) << "\""
                                    << ",\"enabled\":" << BoolToJson(bp.enabled)
                                    << ",\"active\":" << BoolToJson(bp.active)
                                    << ",\"singleshoot\":" << BoolToJson(bp.singleshoot)
+                                   << ",\"silent\":" << BoolToJson(bp.silent)
+                                   << ",\"fast_resume\":" << BoolToJson(bp.fastResume)
                                    << ",\"name\":\"" << JsonEscape(bp.name) << "\""
                                    << ",\"module\":\"" << JsonEscape(bp.mod) << "\""
-                                   << ",\"hit_count\":" << bp.hitCount << "}";
+                                   << ",\"slot\":" << bp.slot
+                                   << ",\"type_ex\":" << (int)bp.typeEx
+                                   << ",\"hw_size\":" << (int)bp.hwSize
+                                   << ",\"hit_count\":" << bp.hitCount
+                                   << ",\"break_condition\":\"" << JsonEscape(bp.breakCondition) << "\""
+                                   << ",\"log_text\":\"" << JsonEscape(bp.logText) << "\""
+                                   << ",\"log_condition\":\"" << JsonEscape(bp.logCondition) << "\""
+                                   << ",\"command_text\":\"" << JsonEscape(bp.commandText) << "\""
+                                   << ",\"command_condition\":\"" << JsonEscape(bp.commandCondition) << "\"}";
                     }
                 }
                 if (map.bp) BridgeFree(map.bp);
             }
             bpResponse << "]";
             SendResponse(client, 200, "application/json", bpResponse.str());
+        }
+
+        // ===== Breakpoint Create/Edit (with condition/log/command details) =====
+        else if (path == "/breakpoint/create") {
+            duint addr;
+            if (!GetParamAddr(params, "addr", addr)) {
+                SendResponse(client, 400, "text/plain", "Missing 'addr' parameter");
+                return;
+            }
+            if (!DbgIsDebugging()) {
+                SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Not debugging any process\"}");
+                return;
+            }
+            if (!Script::Debug::SetBreakpoint(addr)) {
+                SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Failed to create breakpoint\"}");
+                return;
+            }
+            const BP_REF* ref = FindBpRef(bp_normal, addr);
+            if (ref && !ApplyBpDetailFields(params, ref)) {
+                SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Failed to apply breakpoint fields\"}");
+                return;
+            }
+            GuiUpdateBreakpointsView();
+            response << "{\"success\":true}";
+            SendResponse(client, 200, "application/json", response.str());
+        }
+        else if (path == "/breakpoint/create_hw") {
+            duint addr;
+            if (!GetParamAddr(params, "addr", addr)) {
+                SendResponse(client, 400, "text/plain", "Missing 'addr' parameter");
+                return;
+            }
+            if (!DbgIsDebugging()) {
+                SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Not debugging any process\"}");
+                return;
+            }
+
+            std::string type = "x";
+            GetParam(params, "type", type);
+            if (type != "r" && type != "w" && type != "x") {
+                SendResponse(client, 400, "text/plain", "type must be 'r' (read), 'w' (write) or 'x' (execute)");
+                return;
+            }
+
+            std::ostringstream cmd;
+            cmd << "bph 0x" << std::hex << addr << ", " << type;
+            auto sizeIt = params.find("size");
+            if (sizeIt != params.end()) {
+                duint size = std::stoull(sizeIt->second, nullptr, 0);
+                if (size != 1 && size != 2 && size != 4 && size != 8) {
+                    SendResponse(client, 400, "text/plain", "size must be 1, 2, 4 or 8");
+                    return;
+                }
+                if (addr % size != 0) {
+                    SendResponse(client, 400, "text/plain", "address must be aligned to the requested size");
+                    return;
+                }
+                cmd << ", " << size;
+            }
+
+            if (!DbgCmdExecDirect(cmd.str().c_str())) {
+                SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Failed to create hardware breakpoint\"}");
+                return;
+            }
+            const BP_REF* ref = FindBpRef(bp_hardware, addr);
+            if (ref && !ApplyBpDetailFields(params, ref)) {
+                SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Failed to apply breakpoint fields\"}");
+                return;
+            }
+            GuiUpdateBreakpointsView();
+            response << "{\"success\":true}";
+            SendResponse(client, 200, "application/json", response.str());
+        }
+        else if (path == "/breakpoint/edit") {
+            duint addr;
+            if (!GetParamAddr(params, "addr", addr)) {
+                SendResponse(client, 400, "text/plain", "Missing 'addr' parameter");
+                return;
+            }
+            BPXTYPE btype = bp_normal;
+            std::string typeStr;
+            if (GetParam(params, "type", typeStr))
+                btype = ParseBpTypeString(typeStr);
+
+            const BP_REF* ref = FindBpRef(btype, addr);
+            if (!ref) {
+                response << "{\"success\":false,\"error\":\"Breakpoint not found at " << ToHex(addr) << "\"}";
+                SendResponse(client, 200, "application/json", response.str());
+                return;
+            }
+
+            bool applied = false;
+            bool ok = true;
+            ok &= ApplyBpTextField(params, "name", bpf_name, ref, applied);
+            ok &= ApplyBpTextField(params, "break_condition", bpf_breakcondition, ref, applied);
+            ok &= ApplyBpTextField(params, "log_text", bpf_logtext, ref, applied);
+            ok &= ApplyBpTextField(params, "log_condition", bpf_logcondition, ref, applied);
+            ok &= ApplyBpTextField(params, "command_text", bpf_commandtext, ref, applied);
+            ok &= ApplyBpTextField(params, "command_condition", bpf_commandcondition, ref, applied);
+            ok &= ApplyBpTextField(params, "log_file", bpf_logfile, ref, applied);
+
+            // enable/disable must go through the bridge commands - the low-level
+            // bpf_enabled field is not writable via BpSetFieldNumber.
+            auto enIt = params.find("enabled");
+            if (enIt != params.end()) {
+                bool enable = (enIt->second == "true" || enIt->second == "1" || enIt->second == "yes");
+                std::ostringstream enCmd;
+                switch (btype) {
+                    case bp_hardware: enCmd << (enable ? "bphe " : "bphd "); break;
+                    case bp_memory:   enCmd << (enable ? "bpme " : "bpmd "); break;
+                    case bp_dll:      enCmd << (enable ? "bpedll " : "bpddll "); break;
+                    default:          enCmd << (enable ? "bpe " : "bpd ");
+                }
+                enCmd << "0x" << std::hex << addr;
+                ok &= DbgCmdExecDirect(enCmd.str().c_str());
+                applied = true;
+            }
+
+            ok &= ApplyBpBoolField(params, "singleshoot", bpf_singleshoot, ref, applied);
+            ok &= ApplyBpBoolField(params, "silent", bpf_silent, ref, applied);
+            ok &= ApplyBpBoolField(params, "fast_resume", bpf_fastresume, ref, applied);
+            ok &= ApplyBpNumberField(params, "hit_count", bpf_hitcount, ref, applied);
+            GuiUpdateBreakpointsView();
+
+            if (!ok) {
+                response << "{\"success\":false,\"error\":\"One or more fields failed to set\"}";
+            } else if (!applied) {
+                response << "{\"success\":true,\"message\":\"No fields specified to update\"}";
+            } else {
+                response << "{\"success\":true}";
+            }
+            SendResponse(client, 200, "application/json", response.str());
         }
 
         // ===== Disassembly & Modules =====

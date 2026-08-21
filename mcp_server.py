@@ -367,17 +367,18 @@ def set_breakpoint(addr: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 @mcp.tool()
-def delete_breakpoint(addr: str) -> Dict[str, Any]:
+def delete_breakpoint(addr: str, bp_type: str = "normal") -> Dict[str, Any]:
     """Delete a breakpoint at specified address
 
     Args:
         addr: Memory address in hex format (e.g., "0x401000")
+        bp_type: Breakpoint type: "normal", "hardware", "memory", "dll" or "exception"
 
     Returns:
         Dictionary indicating success
     """
     try:
-        return api_request("/breakpoint/delete", {"addr": addr})
+        return api_request("/breakpoint/delete", {"addr": addr, "type": bp_type})
     except DebuggerError as e:
         return {"success": False, "error": str(e)}
 
@@ -387,13 +388,159 @@ def get_all_breakpoints() -> List[Dict[str, Any]]:
 
     Returns:
         List of breakpoint dictionaries with type, address, enabled state,
-        name, module and hit count
+        name, module, hit count and any condition/log/command details
     """
     try:
         result = api_request("/breakpoint/list")
         return result if isinstance(result, list) else []
     except DebuggerError as e:
         return [{"error": str(e)}]
+
+def _add_opt(params: Dict[str, str], key: str, value: Any) -> None:
+    """Add a parameter to the request only when the caller provided it."""
+    if value is None:
+        return
+    if isinstance(value, bool):
+        params[key] = "true" if value else "false"
+    else:
+        params[key] = str(value)
+
+@mcp.tool()
+def create_breakpoint(addr: str,
+                      name: Optional[str] = None,
+                      break_condition: Optional[str] = None,
+                      log_text: Optional[str] = None,
+                      log_condition: Optional[str] = None,
+                      command_text: Optional[str] = None,
+                      command_condition: Optional[str] = None,
+                      log_file: Optional[str] = None,
+                      singleshoot: Optional[bool] = None,
+                      silent: Optional[bool] = None) -> Dict[str, Any]:
+    """Create a software (INT3) breakpoint and optionally set its details
+
+    Args:
+        addr: Memory address in hex format (e.g., "0x401000")
+        name: Optional breakpoint name shown when the breakpoint is hit
+        break_condition: Expression; the breakpoint only breaks when this is true
+            (use "0" to never break, e.g. to only log/execute without pausing)
+        log_text: Log text written to the log window when hit (supports {reg} syntax)
+        log_condition: Only log when this expression is true
+        command_text: Command executed when the breakpoint is hit
+        command_condition: Only run the command when this expression is true
+        log_file: Path of a file the log text is appended to
+        singleshoot: Remove the breakpoint after the first hit
+        silent: Suppress the normal single-line log message on hit
+
+    Returns:
+        Dictionary indicating success
+    """
+    params: Dict[str, str] = {"addr": addr}
+    for key in ("name", "break_condition", "log_text", "log_condition",
+                "command_text", "command_condition", "log_file"):
+        _add_opt(params, key, locals().get(key))
+    for key in ("singleshoot", "silent"):
+        _add_opt(params, key, locals().get(key))
+    try:
+        return api_request("/breakpoint/create", params)
+    except DebuggerError as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+def create_hardware_breakpoint(addr: str,
+                               access_type: str = "x",
+                               size: Optional[int] = None,
+                               name: Optional[str] = None,
+                               break_condition: Optional[str] = None,
+                               log_text: Optional[str] = None,
+                               log_condition: Optional[str] = None,
+                               command_text: Optional[str] = None,
+                               command_condition: Optional[str] = None,
+                               log_file: Optional[str] = None,
+                               singleshoot: Optional[bool] = None,
+                               silent: Optional[bool] = None) -> Dict[str, Any]:
+    """Create a hardware breakpoint using debug registers
+
+    The debug register slot is assigned automatically by x64dbg; the assigned
+    slot is visible in get_all_breakpoints().
+
+    Args:
+        addr: Memory address in hex format (must be aligned to `size`)
+        access_type: "x" (execute), "r" (read) or "w" (write); default "x"
+        size: Access width for r/w breakpoints: 1, 2, 4 or 8 bytes (default 1)
+        name / break_condition / log_text / log_condition / command_text /
+        command_condition / log_file / singleshoot / silent: same as create_breakpoint
+
+    Returns:
+        Dictionary indicating success
+    """
+    params: Dict[str, str] = {"addr": addr, "type": access_type}
+    if size is not None:
+        _add_opt(params, "size", size)
+    for key in ("name", "break_condition", "log_text", "log_condition",
+                "command_text", "command_condition", "log_file"):
+        _add_opt(params, key, locals().get(key))
+    for key in ("singleshoot", "silent"):
+        _add_opt(params, key, locals().get(key))
+    try:
+        return api_request("/breakpoint/create_hw", params)
+    except DebuggerError as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+def edit_breakpoint(addr: str,
+                    bp_type: Optional[str] = None,
+                    name: Optional[str] = None,
+                    break_condition: Optional[str] = None,
+                    log_text: Optional[str] = None,
+                    log_condition: Optional[str] = None,
+                    command_text: Optional[str] = None,
+                    command_condition: Optional[str] = None,
+                    log_file: Optional[str] = None,
+                    enabled: Optional[bool] = None,
+                    singleshoot: Optional[bool] = None,
+                    silent: Optional[bool] = None,
+                    fast_resume: Optional[bool] = None,
+                    hit_count: Optional[int] = None) -> Dict[str, Any]:
+    """Edit the details of an existing breakpoint
+
+    Only the parameters you provide are changed. Pass an empty string to clear
+    a text field.
+
+    Args:
+        addr: Memory address of the breakpoint
+        bp_type: Breakpoint type: "normal", "hardware", "memory", "dll" or
+            "exception" (default "normal")
+        name: Set the breakpoint name
+        break_condition: Expression controlling when the breakpoint breaks
+            (use "0" to never break, e.g. to only log/execute without pausing)
+        log_text: Log text written to the log window when hit
+        log_condition: Only log when this expression is true
+        command_text: Command executed when the breakpoint is hit
+        command_condition: Only run the command when this expression is true
+        log_file: File path the log text is appended to
+        enabled: Enable or disable the breakpoint
+        singleshoot: Remove the breakpoint after the first hit
+        silent: Suppress the normal single-line log message on hit
+        fast_resume: Skip the extra breakpoint-hit state when the run condition
+            triggers immediately
+        hit_count: Reset or set the current hit count
+
+    Returns:
+        Dictionary indicating success
+    """
+    params: Dict[str, str] = {"addr": addr}
+    if bp_type is not None:
+        _add_opt(params, "type", bp_type)
+    for key in ("name", "break_condition", "log_text", "log_condition",
+                "command_text", "command_condition", "log_file"):
+        _add_opt(params, key, locals().get(key))
+    for key in ("enabled", "singleshoot", "silent", "fast_resume"):
+        _add_opt(params, key, locals().get(key))
+    _add_opt(params, "hit_count", hit_count)
+    try:
+        return api_request("/breakpoint/edit", params)
+    except DebuggerError as e:
+        return {"success": False, "error": str(e)}
 
 @mcp.tool()
 def disassemble_at(addr: str) -> Dict[str, Any]:

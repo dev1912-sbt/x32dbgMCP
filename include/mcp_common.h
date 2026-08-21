@@ -8,9 +8,11 @@
 #include <vector>
 #include <iomanip>
 #include <unordered_map>
+#include <type_traits>
 
 // x64dbg SDK
 #include "pluginsdk/bridgemain.h"
+#include "pluginsdk/_dbgfunctions.h"
 #include "pluginsdk/_plugins.h"
 #include "pluginsdk/_scriptapi_module.h"
 #include "pluginsdk/_scriptapi_memory.h"

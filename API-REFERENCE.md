@@ -17,6 +17,8 @@ This document lists all available MCP tools and HTTP endpoints provided by the x
 - [Stack Operations](#stack-operations)
 - [Function Operations](#function-operations)
 - [Bookmark Operations](#bookmark-operations)
+- [Assembler Operations](#assembler-operations)
+- [CPU Flag Operations](#cpu-flag-operations)
 - [Miscellaneous Utilities](#miscellaneous-utilities)
 
 ---
@@ -216,6 +218,26 @@ Step over the next instruction (skip calls).
 **HTTP Endpoint:** `GET /debug/stepout`
 
 Step out of current function (return to caller).
+
+### analyze_current_location
+**HTTP Endpoint:** `GET /status` + `GET /register/get` + `GET /disasm` (combined)
+
+Convenience tool that fetches the current EIP/RIP, disassembles the instruction at it, and returns debugger status in one call.
+
+**Returns:**
+```json
+{
+  "status": {
+    "version": 3,
+    "arch": "x64",
+    "debugging": true,
+    "running": false
+  },
+  "location": "0x140001000",
+  "instruction": "sub rsp, 0x28",
+  "instruction_size": 4
+}
+```
 
 ---
 
@@ -841,7 +863,7 @@ Resolve a label name to its address.
 - Register Operations: 2
 - Memory Operations: 2
 - Pattern/Search Operations: 3
-- Debug Control: 5
+- Debug Control: 6
 - Breakpoint Operations: 6
 - Disassembly & Modules: 2
 - Symbol Operations: 1

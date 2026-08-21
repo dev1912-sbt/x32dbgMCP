@@ -2,11 +2,11 @@
 
 **Full-Featured Model Context Protocol (MCP) server for x32dbg debugger**
 
-Give Claude direct access to **48+ comprehensive x32dbg debugging capabilities** through natural language!
+Give Claude direct access to **52+ comprehensive x32dbg debugging capabilities** through natural language!
 
 ![Architecture](https://img.shields.io/badge/x32dbg-MCP%20Server-blue)
 ![Language](https://img.shields.io/badge/C++-Python-green)
-![Tools](https://img.shields.io/badge/tools-48+-brightgreen)
+![Tools](https://img.shields.io/badge/tools-52+-brightgreen)
 ![Status](https://img.shields.io/badge/status-stable-success)
 
 ---
@@ -165,7 +165,7 @@ Claude: [Uses get_modules, searches memory, sets breakpoints]
 
 ---
 
-## 🔧 Available Tools (48+)
+## 🔧 Available Tools (52+)
 
 > **📚 See [API-REFERENCE.md](API-REFERENCE.md) for complete API documentation**
 
@@ -173,6 +173,12 @@ Claude: [Uses get_modules, searches memory, sets breakpoints]
 - Status & control, command execution, debugging control
 - Register read/write, memory read/write
 - Disassembly, module listing
+
+### Breakpoint Management (6)
+- `set_breakpoint` / `delete_breakpoint` / `get_all_breakpoints` - Set/delete/list breakpoints
+- `create_breakpoint` - Software breakpoints with condition, log, command details
+- `create_hardware_breakpoint` - Hardware breakpoints (execute/read/write, size)
+- `edit_breakpoint` - Edit condition/log/command/enabled state of existing breakpoints
 
 ### Pattern & Memory Search (3)
 - `find_pattern_in_memory` - Search for byte patterns
@@ -303,7 +309,7 @@ Adjust the timeout value (in seconds) based on your needs:
 ```
 x64dbgMCP/
 ├── build.bat              # One-click build script
-├── mcp_server.py          # Python MCP server (950+ lines, 48 tools)
+├── mcp_server.py          # Python MCP server (950+ lines, 52 tools)
 ├── src/
 │   └── MCPx64dbg.cpp      # C++ plugin main file (modular, 650+ lines)
 ├── include/               # Modular handler headers (8 files)
@@ -329,7 +335,7 @@ x64dbgMCP/
 
 ## 🎯 Features
 
-✅ **Full x64dbg SDK Integration** - 48+ tools covering all major x64dbg APIs
+✅ **Full x64dbg SDK Integration** - 52+ tools covering all major x64dbg APIs
 ✅ **Modular Architecture** - Clean, maintainable C++ with organized header files
 ✅ **Complete Debugging Toolkit** - Memory, registers, breakpoints, symbols, labels, comments
 ✅ **Advanced Pattern Search** - Find byte patterns, search and replace
@@ -350,7 +356,7 @@ x64dbgMCP/
 This is a comprehensive full-featured implementation of x64dbgMCP with major improvements:
 
 **Version 3.0 (Current)**
-- ✨ **48+ MCP tools** (up from 16)
+- ✨ **52+ MCP tools** (up from 16)
 - 🏗️ **Modular C++ architecture** with 8 organized header files
 - 🔍 **Complete x64dbg SDK integration** - pattern search, symbols, labels, comments, stack, functions, bookmarks, assembler, CPU flags
 - 📖 **Comprehensive API documentation**

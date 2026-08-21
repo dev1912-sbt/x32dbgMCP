@@ -237,12 +237,108 @@ Set a breakpoint at specified address.
 ```
 
 ### delete_breakpoint
-**HTTP Endpoint:** `GET /breakpoint/delete?addr=<address>`
+**HTTP Endpoint:** `GET /breakpoint/delete?addr=<address>&type=<type>`
 
 Delete a breakpoint at specified address.
 
 **Parameters:**
 - `addr` (string): Memory address in hex format
+- `type` (string, optional): Breakpoint type: "normal" (default), "hardware", "memory", "dll" or "exception"
+
+**Returns:**
+```json
+{
+  "success": true | false
+}
+```
+
+### get_all_breakpoints
+**HTTP Endpoint:** `GET /breakpoint/list`
+
+Get all existing breakpoints of every type (normal, hardware, memory, dll, exception) with full detail.
+
+**Returns:**
+```json
+[
+  {
+    "type": 1,
+    "type_name": "normal",
+    "addr": "0x401000",
+    "enabled": true,
+    "active": true,
+    "singleshoot": false,
+    "silent": false,
+    "fast_resume": false,
+    "name": "entrypoint",
+    "module": "program.exe",
+    "slot": 0,
+    "type_ex": 0,
+    "hw_size": 0,
+    "hit_count": 0,
+    "break_condition": "eax==1",
+    "log_text": "hit {rip}",
+    "log_condition": "",
+    "command_text": "dump esp",
+    "command_condition": ""
+  }
+]
+```
+`slot`/`type_ex`/`hw_size` are meaningful for hardware breakpoints (auto-assigned debug register slot, access type and width).
+
+### create_breakpoint
+**HTTP Endpoint:** `GET /breakpoint/create?addr=<address>&name=<name>&break_condition=<expr>&log_text=<text>&log_condition=<expr>&command_text=<cmd>&command_condition=<expr>&log_file=<path>&singleshoot=true&silent=true`
+
+Create a software (INT3) breakpoint. All parameters except `addr` are optional; a break condition of `0` never breaks (useful for log/command-only breakpoints).
+
+**Parameters:**
+- `addr` (string): Memory address in hex format
+- `name` (string, optional): Breakpoint name shown when hit
+- `break_condition` (string, optional): Expression; breakpoint only breaks when true
+- `log_text` (string, optional): Log text (supports `{reg}` syntax)
+- `log_condition` (string, optional): Only log when this expression is true
+- `command_text` (string, optional): Command run when the breakpoint is hit
+- `command_condition` (string, optional): Only run the command when this expression is true
+- `log_file` (string, optional): File the log text is appended to
+- `singleshoot` (bool, optional): Remove breakpoint after the first hit
+- `silent` (bool, optional): Suppress the normal single-line log message on hit
+
+**Returns:**
+```json
+{
+  "success": true | false
+}
+```
+
+### create_hardware_breakpoint
+**HTTP Endpoint:** `GET /breakpoint/create_hw?addr=<address>&type=<r|w|x>&size=<1|2|4|8>&name=<name>&break_condition=<expr>&log_text=<text>&log_condition=<expr>&command_text=<cmd>&command_condition=<expr>&log_file=<path>&singleshoot=true&silent=true`
+
+Create a hardware breakpoint using debug registers. The register slot is assigned automatically by x64dbg (see `get_all_breakpoints`). Only `addr` is required. For `r`/`w` types the address must be aligned to `size`.
+
+**Parameters:**
+- `addr` (string): Memory address in hex format
+- `type` (string, optional): "x" (execute, default), "r" (read) or "w" (write)
+- `size` (int, optional): Access width 1, 2, 4 or 8 bytes (default 1)
+- `name` / `break_condition` / `log_text` / `log_condition` / `command_text` / `command_condition` / `log_file` / `singleshoot` / `silent` (optional): same as `create_breakpoint`
+
+**Returns:**
+```json
+{
+  "success": true | false
+}
+```
+
+### edit_breakpoint
+**HTTP Endpoint:** `GET /breakpoint/edit?addr=<address>&type=<type>&name=<name>&break_condition=<expr>&log_text=<text>&log_condition=<expr>&command_text=<cmd>&command_condition=<expr>&log_file=<path>&enabled=true&singleshoot=true&silent=true&fast_resume=true&hit_count=<n>`
+
+Edit details of an existing breakpoint. Only the parameters provided are changed; pass an empty string to clear a text field.
+
+**Parameters:**
+- `addr` (string): Memory address of the breakpoint
+- `type` (string, optional): Breakpoint type ("normal" default, "hardware", "memory", "dll", "exception")
+- `name` / `break_condition` / `log_text` / `log_condition` / `command_text` / `command_condition` / `log_file` (string, optional): as in `create_breakpoint`
+- `enabled` (bool, optional): Enable or disable the breakpoint
+- `singleshoot` / `silent` / `fast_resume` (bool, optional): Breakpoint behavior flags
+- `hit_count` (int, optional): Set the hit count
 
 **Returns:**
 ```json
@@ -407,7 +503,8 @@ Get comment at specified address.
 ```json
 {
   "success": true | false,
-  "text": "This function decrypts the payload"
+  "text": "This function decrypts the payload",
+  "manual": true
 }
 ```
 
@@ -586,6 +683,99 @@ Get all bookmarks in the debugged process.
 
 ---
 
+## Assembler Operations
+
+### assemble_instruction
+**HTTP Endpoint:** `GET /assembler/assemble?addr=<address>&instruction=<asm>`
+
+Assemble an instruction to bytecode without writing to memory.
+
+**Parameters:**
+- `addr` (string): Memory address in hex format (context for assembling)
+- `instruction` (string): Instruction to assemble (e.g., "push ebp")
+
+**Returns:**
+```json
+{
+  "success": true | false,
+  "data": "5589E5"
+}
+```
+
+### assemble_and_patch
+**HTTP Endpoint:** `GET /assembler/assemble_mem?addr=<address>&instruction=<asm>`
+
+Assemble an instruction and write it directly into memory at the address.
+
+**Parameters:**
+- `addr` (string): Memory address in hex format
+- `instruction` (string): Instruction to assemble
+
+**Returns:**
+```json
+{
+  "success": true | false
+}
+```
+
+---
+
+## CPU Flag Operations
+
+### get_cpu_flag
+**HTTP Endpoint:** `GET /flag/get?flag=<ZF|OF|CF|PF|SF|TF|AF|DF|IF>`
+
+Read an individual CPU flag.
+
+**Parameters:**
+- `flag` (string): Flag name (e.g., "ZF")
+
+**Returns:**
+```json
+{
+  "flag": "ZF",
+  "value": true | false
+}
+```
+
+### set_cpu_flag
+**HTTP Endpoint:** `GET /flag/set?flag=<ZF>&value=true`
+
+Write an individual CPU flag.
+
+**Parameters:**
+- `flag` (string): Flag name (e.g., "ZF")
+- `value` (bool): Flag value
+
+**Returns:**
+```json
+{
+  "success": true | false
+}
+```
+
+### get_all_cpu_flags
+**HTTP Endpoint:** `GET /flags/get_all`
+
+Get all CPU flags at once (ZF, OF, CF, PF, SF, TF, AF, DF, IF).
+
+**Returns:**
+```json
+{
+  "ZF": true,
+  "OF": false,
+  "CF": false,
+  "PF": true,
+  "SF": false,
+  "TF": false,
+  "AF": false,
+  "DF": false,
+  "IF": true
+}
+```
+
+---
+
 ## Miscellaneous Utilities
 
 ### parse_expression
@@ -645,14 +835,14 @@ Resolve a label name to its address.
 
 ## Summary
 
-**Total Tools: 43+**
+**Total Tools: 52**
 
 - Core Status & Control: 2
 - Register Operations: 2
 - Memory Operations: 2
 - Pattern/Search Operations: 3
 - Debug Control: 5
-- Breakpoint Operations: 2
+- Breakpoint Operations: 6
 - Disassembly & Modules: 2
 - Symbol Operations: 1
 - Label Operations: 5
@@ -660,6 +850,8 @@ Resolve a label name to its address.
 - Stack Operations: 3
 - Function Operations: 4
 - Bookmark Operations: 4
+- Assembler Operations: 2
+- CPU Flag Operations: 3
 - Miscellaneous Utilities: 3
 
 ---
@@ -675,7 +867,7 @@ Resolve a label name to its address.
 
 ## Building
 
-See [BUILD.md](BUILD.md) for build instructions.
+See [README.md](README.md) for build instructions.
 
 ## Usage
 

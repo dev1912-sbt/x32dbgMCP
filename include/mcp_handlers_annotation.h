@@ -61,6 +61,7 @@ inline void HandleLabelSet(SOCKET client, const std::unordered_map<std::string, 
 
     GetParamBool(params, "manual", manual);
     bool success = Script::Label::Set(addr, text.c_str(), manual, false); // false = not temporary
+    if (success) GuiUpdateAllViews();
 
     std::ostringstream response;
     response << "{\"success\":" << BoolToJson(success) << "}";
@@ -158,6 +159,7 @@ inline void HandleCommentSet(SOCKET client, const std::unordered_map<std::string
 
     GetParamBool(params, "manual", manual);
     bool success = Script::Comment::Set(addr, text.c_str(), manual);
+    if (success) GuiUpdateAllViews();
 
     std::ostringstream response;
     response << "{\"success\":" << BoolToJson(success) << "}";
@@ -172,12 +174,19 @@ inline void HandleCommentGet(SOCKET client, const std::unordered_map<std::string
         return;
     }
 
-    char text[MAX_COMMENT_SIZE] = {0};
-    bool success = Script::Comment::Get(addr, text);
+    // Use GetInfo (struct) instead of Get(char*) - Get() can return the raw
+    // comment with a leading status byte (e.g. 0x01) which broke JSON parsing.
+    Script::Comment::CommentInfo info;
+    bool success = Script::Comment::GetInfo(addr, &info);
 
     std::ostringstream response;
-    response << "{\"success\":" << BoolToJson(success)
-             << ",\"text\":\"" << JsonEscape(text) << "\"}";
+    if (success) {
+        response << "{\"success\":true"
+                 << ",\"text\":\"" << JsonEscape(info.text) << "\""
+                 << ",\"manual\":" << BoolToJson(info.manual) << "}";
+    } else {
+        response << "{\"success\":false,\"text\":\"\"}";
+    }
     SendResponse(client, 200, "application/json", response.str());
 }
 

@@ -33,14 +33,24 @@
 
 inline std::string JsonEscape(const std::string& str) {
     std::string result;
-    for (char c : str) {
+    for (unsigned char c : str) {
         switch (c) {
             case '"': result += "\\\""; break;
             case '\\': result += "\\\\"; break;
             case '\n': result += "\\n"; break;
             case '\r': result += "\\r"; break;
             case '\t': result += "\\t"; break;
-            default: result += c;
+            default:
+                if (c < 0x20) {
+                    // Escape remaining control characters (e.g. the 0x01 status
+                    // byte x64dbg can hand back) or the JSON is invalid.
+                    static const char* hex = "0123456789abcdef";
+                    result += "\\u00";
+                    result += hex[(c >> 4) & 0xF];
+                    result += hex[c & 0xF];
+                } else {
+                    result += (char)c;
+                }
         }
     }
     return result;

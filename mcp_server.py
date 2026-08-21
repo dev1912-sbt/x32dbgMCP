@@ -382,6 +382,20 @@ def delete_breakpoint(addr: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 @mcp.tool()
+def get_all_breakpoints() -> List[Dict[str, Any]]:
+    """Get all existing breakpoints (normal, hardware, memory, dll, exception)
+
+    Returns:
+        List of breakpoint dictionaries with type, address, enabled state,
+        name, module and hit count
+    """
+    try:
+        result = api_request("/breakpoint/list")
+        return result if isinstance(result, list) else []
+    except DebuggerError as e:
+        return [{"error": str(e)}]
+
+@mcp.tool()
 def disassemble_at(addr: str) -> Dict[str, Any]:
     """Disassemble instruction at specified address
 

@@ -404,6 +404,35 @@ void HandleRequest(SOCKET client, const std::string& method, const std::string& 
             response << "{\"success\":" << BoolToJson(success) << "}";
             SendResponse(client, 200, "application/json", response.str());
         }
+        else if (path == "/breakpoint/list") {
+            // Enumerate every breakpoint type (normal/hardware/memory/dll/exception).
+            static const BPXTYPE types[] = { bp_normal, bp_hardware, bp_memory, bp_dll, bp_exception };
+            std::ostringstream bpResponse;
+            bpResponse << "[";
+            bool firstBp = true;
+            for (BPXTYPE type : types) {
+                BPMAP map;
+                int count = DbgGetBpList(type, &map);
+                if (count > 0 && map.bp) {
+                    for (int i = 0; i < count; i++) {
+                        const BRIDGEBP& bp = map.bp[i];
+                        if (!firstBp) bpResponse << ",";
+                        firstBp = false;
+                        bpResponse << "{\"type\":" << (int)bp.type
+                                   << ",\"addr\":\"" << ToHex(bp.addr) << "\""
+                                   << ",\"enabled\":" << BoolToJson(bp.enabled)
+                                   << ",\"active\":" << BoolToJson(bp.active)
+                                   << ",\"singleshoot\":" << BoolToJson(bp.singleshoot)
+                                   << ",\"name\":\"" << JsonEscape(bp.name) << "\""
+                                   << ",\"module\":\"" << JsonEscape(bp.mod) << "\""
+                                   << ",\"hit_count\":" << bp.hitCount << "}";
+                    }
+                }
+                if (map.bp) BridgeFree(map.bp);
+            }
+            bpResponse << "]";
+            SendResponse(client, 200, "application/json", bpResponse.str());
+        }
 
         // ===== Disassembly & Modules =====
         else if (path == "/disasm") {

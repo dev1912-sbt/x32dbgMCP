@@ -1165,6 +1165,263 @@ def get_all_cpu_flags() -> Dict[str, Any]:
 
 
 #=============================================================================
+# MCP Tools - Debugger Log + Debug Events
+#
+# read_debugger_log:_compression-aware view of the x64dbg log window. The C++
+# plugin captures the log to a temp file and /log/read returns byte deltas
+# since the previous read (micro-snapshot: stop redirect, read, resume). This
+# side runs on the raw text.
+#
+# list_debug_events: structured exception/breakpoint/pause/resume stream from
+# the plugin's CB_* callbacks (seq numbers for incremental reads).
+#=============================================================================
+
+import re as _re
+
+_MAX_LOG_TOOL_BYTES = 4 * 1024 * 1024
+
+# Line-level state so repeated calls without an explicit `after` only return the
+# new bytes (holds the plugin's "size" cursor per process; reset on /log/reset)
+_log_state = {"size": 0}
+
+
+def _normalize_line(line: str) -> str:
+    """Strip volatile parts (addresses, hex/digit runs) so near-duplicate spam
+    lines still compare equal. Used only for *counting*, never displayed."""
+    s = _re.sub(r"0[xX][0-9a-fA-F]+", "0x?", line.strip())
+    s = _re.sub(r"\b[0-9a-fA-F]{6,}\b", "?", s)   # bare pointer-length hex
+    s = _re.sub(r"\b\d+\b", "?", s)               # any decimal run
+    return s
+
+
+def _block_raw_identical(lines, start, blen, count) -> bool:
+    """True when every raw line in a counted block is bit-identical (only then
+    the "xN" count is exact; otherwise values varied and we say so)."""
+    first = lines[start:start + blen]
+    for k in range(1, count):
+        if lines[start + k * blen: start + k * blen + blen] != first:
+            return False
+    return True
+
+
+def _find_run(lines, start, normalized, max_block=16):
+    """Return (block_length, run_count) of the longest contiguous repeated block
+    starting at `start`, or (0, 0) if nothing repeats."""
+    n = len(lines)
+    best = (0, 0)
+    for blen in range(1, min(max_block, n - start) + 1):
+        key = tuple(normalized[start:start + blen])
+        count = 1
+        j = start + blen
+        while j + blen <= n and tuple(normalized[j:j + blen]) == key:
+            count += 1
+            j += blen
+        if count >= 2 and blen * count > best[0] * best[1]:
+            best = (blen, count)
+    return best
+
+
+# Lines the capture mechanism itself inserts (the GUI logs them when the
+# redirect is stopped/restarted for a read). They are not debugger log content,
+# so strip them before compression/reporting.
+_CONTROL_LINE_PREFIXES = (
+    "Log will be redirected to ",
+    "Log redirection is stopped.",
+    "_wfopen() failed. Log will not be redirected to ",
+)
+
+
+def _strip_control_lines(raw_lines: List[str]) -> List[str]:
+    out = []
+    for ln in raw_lines:
+        s = ln.strip()
+        if any(s.startswith(p) for p in _CONTROL_LINE_PREFIXES):
+            continue
+        out.append(ln)
+    return out
+
+
+def compress_log(lines: List[str], normalize: bool = True) -> tuple:
+    """Compress a log line list. Returns (compressed_lines, stats).
+
+    Three tiers, all order-preserving:
+      1. contiguous single-line runs   (LOGLINE x400)
+      2. contiguous multi-line blocks  (X lines repeated Y times)
+      3. periodic cycles               (A,B,A,B  ->  cycle(P=2) x200), only when
+                                         the region folds cleanly so nothing is
+                                         hidden (non-conforming lines split the
+                                         run and stay inline)
+    Lines that differ only by addresses/values count as the same line when
+    `normalize` is on (default), and the marker then ends with "(values vary)".
+    The real first line of each run is shown verbatim.
+    """
+    if not lines:
+        return [], (0, 0, 0)
+
+    norm = [_normalize_line(l) if normalize else l for l in lines]
+    n = len(lines)
+    out: List[str] = []
+
+    i = 0
+    while i < n:
+        blen, count = _find_run(lines, i, norm)
+        if count >= 2:
+            block = lines[i:i + blen]
+            total = blen * count
+            vary = not _block_raw_identical(lines, i, blen, count)
+            hint = " (values vary)" if vary else ""
+            if blen == 1:
+                out.append(f"[rep {count}x{hint}] {block[0].rstrip(chr(10))}")
+            else:
+                out.append(f"[block {count}x ({blen} lines){hint}]")
+                for ln in block:
+                    out.append(ln.rstrip(chr(10)))
+            i += total
+            continue
+
+        # no contiguous run: look for a period that folds a quiet region
+        period, cycles = 0, 0
+        for p in range(2, 9):
+            if i + p * 3 > n:
+                break
+            key = tuple(norm[i:i + p])
+            c = 1
+            j = i + p
+            while j + p <= n and tuple(norm[j:j + p]) == key:
+                c += 1
+                j += p
+            if c >= 3 and c >= cycles:
+                cycles = c
+                period = p
+        if cycles >= 3:
+            pattern = lines[i:i + period]
+            vary = not _block_raw_identical(lines, i, period, cycles)
+            hint = " (values vary)" if vary else ""
+            out.append(f"[cycle(P={period}) x{cycles}{hint}]")
+            for ln in pattern:
+                out.append(ln.rstrip(chr(10)))
+            i += period * cycles
+            continue
+
+        out.append(lines[i].rstrip(chr(10)))
+        i += 1
+
+    repeated = sum(1 for ln in out
+                   if ln.startswith("[rep ") or ln.startswith("[block ")
+                   or ln.startswith("[cycle("))
+    return out, (len(out), repeated, n - len(out))
+
+
+@mcp.tool()
+def read_debugger_log(
+    after: Optional[int] = None,
+    compress: bool = True,
+    normalize: bool = True,
+    max_bytes: int = _MAX_LOG_TOOL_BYTES,
+) -> Dict[str, Any]:
+    """Read recent debugger log output, optionally compressed for spam
+
+    The plugin captures the x64dbg log window. By default this tool returns the
+    log bytes since the previous call (incremental); pass `after` explicitly to
+    re-read. To replay everything, reset the log first (log/reset endpoint) or
+    use a large `after`.
+
+    Compression (on by default) collapses, in order:
+      1. repetitive lines "hit bp at 0x... [rep 237x]" - lines that differ only
+         by address/value count once, shown via the first verbatim occurrence
+      2. repeating multi-line blocks (X lines repeated Y times)
+      3. periodic cycles like A,B,A,B [cycle(P=2) x200]
+    Set `compress` False for the raw, uncompressed tail.
+
+    Args:
+        after: byte offset to read from (default: delta since last read)
+        compress: collapse repetitive spam (default True)
+        normalize: treat lines differing only by addresses/values as repeats
+                   (default True; only affects counting)
+        max_bytes: cap on how many new bytes are read (default 4MB)
+
+    Returns:
+        Dict with the (optionally compressed) log text, byte offsets for
+        incremental reading, and a summary of how many lines were folded.
+    """
+    try:
+        params = {}
+        if after is not None:
+            params["after"] = str(int(after))
+        result = api_request("/log/read", params)
+        if not isinstance(result, dict) or not result.get("success"):
+            return {"success": False, "error": result.get("error", "log read failed")}
+
+        content = result.get("content", "") or ""
+        new_size = int(result.get("size", 0) or 0)
+        truncated = bool(result.get("truncated", False))
+        _log_state["size"] = new_size
+
+        raw_lines = content.split("\n")
+        if raw_lines and raw_lines[-1] == "":
+            raw_lines = raw_lines[:-1]
+        raw_lines = _strip_control_lines(raw_lines)
+
+        if not compress:
+            return {
+                "success": True,
+                "total_bytes": new_size,
+                "after": new_size,
+                "truncated": truncated,
+                "raw_lines": len(raw_lines),
+                "content": content,
+            }
+
+        compressed, (out_lines, folded_runs, folded_lines) = compress_log(raw_lines, normalize=normalize)
+        text = "\n".join(compressed)
+        return {
+            "success": True,
+            "total_bytes": new_size,
+            "after": new_size,
+            "truncated": truncated,
+            "raw_lines": len(raw_lines),
+            "folded_lines": folded_lines,      # raw lines hidden by compression
+            "folded_runs": folded_runs,        # [rep]/[block]/[cycle] markers
+            "output_lines": out_lines,
+            "content": text,
+        }
+    except DebuggerError as e:
+        return {"success": False, "error": str(e)}
+
+
+@mcp.tool()
+def list_debug_events(after: int = 0, limit: int = 500) -> Dict[str, Any]:
+    """List structured debugger events (exceptions, breakpoint hits, pause/resume)
+
+    Events come from the plugin's callbacks, so they are seen even when the
+    policy is set to skip/handle them silently in the log. Each event has a
+    monotonic `seq`; poll with `after`=<next_seq> from a previous call to get
+    only new events.
+
+    Args:
+        after: only return events with seq > after (default 0 = all buffered)
+        limit: maximum events to return (default 500)
+
+    Returns:
+        Dict with events (type, code/name/address/module for exceptions, etc.)
+        and next_seq to use as `after` on the next poll.
+    """
+    try:
+        resp = api_request("/debug/events", {"after": str(int(after))})
+        events = resp.get("events", []) if isinstance(resp, dict) else []
+        for _ in range(max(0, len(events) - max(0, limit))):
+            events.pop(0)
+        return {
+            "success": True,
+            "count": len(events),
+            "next_seq": resp.get("next_seq", 0) if isinstance(resp, dict) else 0,
+            "events": events,
+        }
+    except DebuggerError as e:
+        return {"success": False, "error": str(e)}
+
+
+#=============================================================================
 # Main Entry Point
 #=============================================================================
 

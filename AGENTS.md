@@ -39,6 +39,7 @@ cmake --build build64 --config Release      # → build64\Release\MCPx64dbg.dp64
 - Breakpoint enable/disable must use bridge commands (`bpe`/`bpd`, `bphe`/`bphd`, …) — `BpSetFieldNumber(bpf_enabled, …)` does not work.
 - HW breakpoint slots (DR0–3) are auto-assigned; `bpf_hwslot` is read-only and the `bph` command takes no slot. Expose the assigned slot, don't try to pick it.
 - `/comment/get` must use `Script::Comment::GetInfo` — `Get(char*)` returns a raw `0x01` status byte for auto comments that breaks JSON. (Same class of bug can lurk in other handlers; `JsonEscape` now escapes control chars.)
+- Log capture uses `GuiLogRedirect(path)` → `LogView::redirectLogToFileSlot` (GUI-side, UTF-8 append). The GUI's `FILE*` is opened with a share mode that blocks all other readers while held. Fix: `GuiLogRedirectStop()` closes the handle (flush + unlock), then read the delta, then `GuiLogRedirect(path)` resumes. The stop/start are `GUI_REDIRECT_LOG` bridge signals queued to the GUI thread → poll up to ~1 s (40×25 ms) before reading/deleting. Control lines (`Log will be redirected to …`, `Log redirection is stopped.`) are stripped in `mcp_server.py`. File is per-arch in `%TEMP%\mcp_x64dbg_log_x64.log` / `_x32.log`, started in `pluginSetup`. `GuiLogSave` is not used — the log view's document is only materialized while the Log view is visible (empty file otherwise).
 - `get_symbols` returns a huge payload (~5.8 MB HTTP, ~12.6 MB as an MCP JSON-RPC line). Conformance runners with a message-line cap below ~20 MB will stall on it.
 
 ## Testing
@@ -47,7 +48,7 @@ cmake --build build64 --config Release      # → build64\Release\MCPx64dbg.dp64
   ```
   testmymcp stdio "<venv-python> <path-to>/mcp_server.py" --env X64DBG_URL=http://127.0.0.1:8888 --level 3 --mode all --timeout 120000
   ```
-- `testmymcp` tokenizes its command on spaces — serve it a path with no spaces (symlink/junction) or quoted args.
+- `testmymcp` tokenizes its command on spaces — serve it a path with no spaces (symlink/junction) or quoted args. Raise `--max-line-size` to ~20 MB if testing with `get_symbols` (default 16 MB stalls on the ~12.6 MB line).
 - `--mode all` is required to exercise mutating tools (run/pause/breakpoints); the default `safe` mode skips them. Expect benign warnings about FastMCP list-caching and protocol negotiation, plus a few skips.
 - Stateful breakpoint/register tests require a debuggee attached in x64dbg; read-only tools work without one.
 

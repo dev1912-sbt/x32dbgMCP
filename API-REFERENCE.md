@@ -20,6 +20,7 @@ This document lists all available MCP tools and HTTP endpoints provided by the x
 - [Assembler Operations](#assembler-operations)
 - [CPU Flag Operations](#cpu-flag-operations)
 - [Miscellaneous Utilities](#miscellaneous-utilities)
+- [Log & Event Stream](#log--event-stream)
 
 ---
 
@@ -855,9 +856,79 @@ Resolve a label name to its address.
 
 ---
 
+## Log & Event Stream
+
+### read_debugger_log
+**HTTP Endpoint:** `GET /log/read?after=<offset>` / `GET /log/reset`
+
+Read the debugger log with optional delta offset and repetition-aware compression. The C++ plugin captures the GUI log via `GuiLogRedirect` into a per-arch temp file (`mcp_x64dbg_log_x64.log` / `mcp_x64dbg_log_x32.log`) using a stop/read/resume micro-snapshot; the Python tool filters control lines and compresses repetitions.
+
+**HTTP Endpoints:**
+- `GET /log/read?after=<byte_offset>` — return log bytes newer than `<after>`. `after=0` returns everything; default (`after` omitted) returns the delta since the last read. Large snapshots are capped at 4 MB and truncated on a line boundary.
+- `GET /log/reset` — truncate the captured log and clear the GUI log window (`clearlog`). The next read returns only post-reset content.
+
+**MCP Parameters (Python `read_debugger_log`):**
+- `after` (int, optional): Byte offset; omitted = delta since last call via `_log_state`
+- `compress` (bool, default true): Fold repetitions into `[rep Nx]`, `[rep Nx (values vary)]`, `[block Nx (M lines)]`, and periodic `[cycle(P=x) …]` summaries; normalized comparison replaces `0x…` and decimal runs with `?`
+- `normalize` (bool, default true): Enable normalized folding (otherwise only exact repeats)
+- `max_bytes` (int, default 4194304): 4 MB response cap
+
+**Returns:**
+```json
+{
+  "success": true,
+  "size": 1482,
+  "total_bytes": 1482,
+  "raw_lines": 41,
+  "folded_lines": 1,
+  "folded_runs": 1,
+  "output_lines": 40,
+  "truncated": false,
+  "content": "Initializing debugger...\n..."
+}
+```
+
+**Notes:**
+- The GUI log is captured even when `DisableLog` is set; every log message is captured regardless of view state, bypassing the GUI's circular buffer.
+- Each `/log/read` does a `GuiLogRedirectStop()` → read delta → `GuiLogRedirect(path)` snapshot; control lines (`Log will be redirected to …`, `Log redirection is stopped.`) are stripped by the Python tool.
+
+### list_debug_events
+**HTTP Endpoint:** `GET /debug/events?after=<seq>`
+
+Poll the ring-buffered debug event stream. The C++ plugin registers callbacks for `CB_EXCEPTION`, `CB_BREAKPOINT`, `CB_RESUMEDEBUG`, and `CB_PAUSEDEBUG` and stores up to 4096 events (oldest evicted). Useful for polling after `run`/`pause`/breakpoint hits without losing events between calls.
+
+**HTTP Endpoint:**
+- `GET /debug/events?after=<seq>` — return events with `seq > after`. `after=0` returns all buffered events. Response always includes `next_seq` (use as the cursor for the next poll).
+
+**MCP Parameters (Python `list_debug_events`):**
+- `after` (int, optional): Sequence cursor; omitted = 0
+- `limit` (int, optional): Max events to return (currently returns all matching; server caps at 4096)
+
+**Event types:**
+- `pause` / `resume` — `{ "seq": 1, "ticks": 184408156, "type": "pause" }`
+- `breakpoint` — `{ "type": "breakpoint", "address": "0x7ffd...", "module": "win32u.dll", "hit_count": 1, "thread_id": 40484 }` (normal/hardware/memory/dll/exception breakpoints; address/module/name from `BRIDGEBP`)
+- `exception` — `{ "type": "exception", "code": "0xC0000005", "name": "ACCESS_VIOLATION", "address": "0x140001000", "module": "program.exe", "first_chance": true, "continuable": true, "thread_id": 1234, "access_type": "read", "access_address": "0x0" }` (for `0xC0000005`; other codes omit `access_*`)
+
+**Returns:**
+```json
+{
+  "success": true,
+  "next_seq": 4,
+  "count": 4,
+  "events": [
+    { "seq": 1, "ticks": 184408156, "type": "pause" },
+    { "seq": 2, "ticks": 184413234, "type": "resume" },
+    { "seq": 3, "ticks": 184804062, "type": "breakpoint", "address": "0x7ffd3a6bae84", "module": "win32u.dll", "hit_count": 1, "thread_id": 40484 },
+    { "seq": 4, "ticks": 184804062, "type": "pause" }
+  ]
+}
+```
+
+---
+
 ## Summary
 
-**Total Tools: 52**
+**Total Tools: 54**
 
 - Core Status & Control: 2
 - Register Operations: 2
@@ -875,6 +946,7 @@ Resolve a label name to its address.
 - Assembler Operations: 2
 - CPU Flag Operations: 3
 - Miscellaneous Utilities: 3
+- Log & Event Stream: 2
 
 ---
 

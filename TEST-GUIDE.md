@@ -35,7 +35,7 @@ This performs complete MCP protocol tests:
 ✅ PASSED: Server has correct import
 ✅ PASSED: Server started successfully
 ✅ PASSED: Server responded to initialize
-✅ PASSED: Server has 52 tools registered
+✅ PASSED: Server has 54 tools registered
 ```
 
 If you see this, **the MCP server is working!** The issue is with Claude Code integration.

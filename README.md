@@ -2,11 +2,11 @@
 
 **Full-Featured Model Context Protocol (MCP) server for x32dbg debugger**
 
-Give Claude direct access to **52+ comprehensive x32dbg debugging capabilities** through natural language!
+Give Claude direct access to **54+ comprehensive x32dbg debugging capabilities** through natural language!
 
 ![Architecture](https://img.shields.io/badge/x32dbg-MCP%20Server-blue)
 ![Language](https://img.shields.io/badge/C++-Python-green)
-![Tools](https://img.shields.io/badge/tools-52+-brightgreen)
+![Tools](https://img.shields.io/badge/tools-54+-brightgreen)
 ![Status](https://img.shields.io/badge/status-stable-success)
 
 ---
@@ -165,7 +165,7 @@ Claude: [Uses get_modules, searches memory, sets breakpoints]
 
 ---
 
-## 🔧 Available Tools (52+)
+## 🔧 Available Tools (54+)
 
 > **📚 See [API-REFERENCE.md](API-REFERENCE.md) for complete API documentation**
 
@@ -212,6 +212,10 @@ Claude: [Uses get_modules, searches memory, sets breakpoints]
 - `parse_expression` - Evaluate complex expressions
 - `resolve_api_address` - Find API addresses in debuggee
 - `resolve_label_address` - Label resolution
+
+### Log & Event Stream (2) 🆕
+- `read_debugger_log` - Read debugger log with compression and delta offsets (`/log/read`, `/log/reset`)
+- `list_debug_events` - Poll ring-buffered debug events (pause/resume/breakpoint/exception, `/debug/events`)
 
 ---
 
@@ -309,10 +313,10 @@ Adjust the timeout value (in seconds) based on your needs:
 ```
 x64dbgMCP/
 ├── build.bat              # One-click build script
-├── mcp_server.py          # Python MCP server (950+ lines, 52 tools)
+├── mcp_server.py          # Python MCP server (1050+ lines, 54 tools)
 ├── src/
 │   └── MCPx64dbg.cpp      # C++ plugin main file (modular, 650+ lines)
-├── include/               # Modular handler headers (8 files)
+├── include/               # Modular handler headers (9 files)
 │   ├── mcp_common.h       # Common utilities and helpers
 │   ├── mcp_handlers_pattern.h      # Pattern/memory search
 │   ├── mcp_handlers_annotation.h   # Symbols/labels/comments
@@ -320,7 +324,8 @@ x64dbgMCP/
 │   ├── mcp_handlers_function.h     # Functions/bookmarks
 │   ├── mcp_handlers_misc.h         # Misc utilities
 │   ├── mcp_handlers_assembler.h    # Assembler operations
-│   └── mcp_handlers_flags.h        # CPU flags
+│   ├── mcp_handlers_flags.h        # CPU flags
+│   └── mcp_handlers_log.h          # Log capture & debug events
 ├── deps/
 │   └── pluginsdk/         # x64dbg SDK headers
 ├── build/
@@ -335,7 +340,7 @@ x64dbgMCP/
 
 ## 🎯 Features
 
-✅ **Full x64dbg SDK Integration** - 52+ tools covering all major x64dbg APIs
+✅ **Full x64dbg SDK Integration** - 54+ tools covering all major x64dbg APIs
 ✅ **Modular Architecture** - Clean, maintainable C++ with organized header files
 ✅ **Complete Debugging Toolkit** - Memory, registers, breakpoints, symbols, labels, comments
 ✅ **Advanced Pattern Search** - Find byte patterns, search and replace
@@ -356,7 +361,7 @@ x64dbgMCP/
 This is a comprehensive full-featured implementation of x64dbgMCP with major improvements:
 
 **Version 3.0 (Current)**
-- ✨ **52+ MCP tools** (up from 16)
+- ✨ **54+ MCP tools** (up from 16)
 - 🏗️ **Modular C++ architecture** with 8 organized header files
 - 🔍 **Complete x64dbg SDK integration** - pattern search, symbols, labels, comments, stack, functions, bookmarks, assembler, CPU flags
 - 📖 **Comprehensive API documentation**

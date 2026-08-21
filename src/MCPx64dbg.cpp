@@ -22,6 +22,7 @@
 #include "mcp_handlers_misc.h"
 #include "mcp_handlers_assembler.h"
 #include "mcp_handlers_flags.h"
+#include "mcp_handlers_log.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -76,6 +77,8 @@ bool pluginInit(PLUG_INITSTRUCT* initStruct) {
 
 void pluginStop() {
     _plugin_logprintf("[MCP] Stopping plugin...\n");
+    GuiLogRedirectStop();
+    MCPHandlers::Events::UnregisterCallbacks();
     g_running = false;
 
     if (g_serverSocket != INVALID_SOCKET) {
@@ -91,6 +94,13 @@ void pluginStop() {
 }
 
 bool pluginSetup() {
+    // Start capturing the debugger log from the first plugin load so MCP reads
+    // get the full session. The GUI's redirection writes every log message to
+    // a per-arch temp file; /log/read micro-snapshots it (stop, read, resume).
+    if (MCPHandlers::Log::g_logPath.empty())
+        MCPHandlers::Log::g_logPath = MCPHandlers::Log::BuildLogPath();
+    GuiLogRedirect(MCPHandlers::Log::g_logPath.c_str());
+    MCPHandlers::Events::RegisterCallbacks();
     return true;
 }
 
@@ -296,6 +306,12 @@ void HandleRequest(SOCKET client, const std::string& method, const std::string& 
                     << "}";
             SendResponse(client, 200, "application/json", response.str());
         }
+        else if (path == "/log/read") {
+            MCPHandlers::Log::HandleLogRead(client, params);
+        }
+        else if (path == "/log/reset") {
+            MCPHandlers::Log::HandleLogReset(client, params);
+        }
         else if (path == "/cmd") {
             auto it = params.find("cmd");
             if (it == params.end()) {
@@ -456,6 +472,9 @@ void HandleRequest(SOCKET client, const std::string& method, const std::string& 
                 else Script::Debug::StepOut();
                 SendResponse(client, 200, "application/json", "{\"success\":true}");
             }
+        }
+        else if (path == "/debug/events") {
+            MCPHandlers::Events::HandleDebugEvents(client, params);
         }
 
         // ===== Breakpoint Operations =====

@@ -200,10 +200,36 @@ Search for all occurrences of a pattern in memory.
 
 Resume execution of the debugged process.
 
+**Returns:**
+```json
+{
+  "success": true
+}
+```
+
+If the process is already running the request skips instantly:
+```json
+{ "success": true, "skipped": true, "message": "Process is already running" }
+```
+
+The SDK call is bounded by a 30-second timeout; if it does not return in time (e.g. an odd debuggee state) the response still arrives with a `timed_out` flag instead of pinning the HTTP connection:
+```json
+{ "success": true, "timed_out": true, "message": "Tool executed, but the internal call timed out after 30 seconds. Please verify the current state." }
+```
+
 ### pause_process
 **HTTP Endpoint:** `GET /debug/pause`
 
 Pause execution of the debugged process.
+
+**Returns:**
+```json
+{
+  "success": true
+}
+```
+
+Same skip behavior and 30-second `timed_out` bound as `run_process`.
 
 ### step_execution
 **HTTP Endpoint:** `GET /debug/step`
@@ -219,6 +245,8 @@ Step over the next instruction (skip calls).
 **HTTP Endpoint:** `GET /debug/stepout`
 
 Step out of current function (return to caller).
+
+All three step endpoints share the same 30-second SDK-call timeout: on expiry they return `{ "success": true, "timed_out": true, "message": "Tool executed, but the internal call timed out after 30 seconds. Please verify the current state." }`.
 
 ### analyze_current_location
 **HTTP Endpoint:** `GET /status` + `GET /register/get` + `GET /disasm` (combined)

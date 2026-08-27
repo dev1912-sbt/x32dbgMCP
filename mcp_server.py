@@ -87,7 +87,10 @@ def api_request(endpoint: str, params: Optional[Dict[str, str]] = None) -> Any:
 
     except requests.exceptions.Timeout:
         log.error("TIMEOUT %s%s  hung %.1fs (budget %ds)", endpoint, _q, time.perf_counter() - _t0, REQUEST_TIMEOUT)
-        raise DebuggerError("Request timed out - is x32dbg running?")
+        raise DebuggerError(
+            "Tool executed, but the internal call timed out after %d seconds. "
+            "Please verify the changes to know the current state." % REQUEST_TIMEOUT
+        )
     except requests.exceptions.ConnectionError:
         log.error("CONNFAIL %s%s  %.1fs", endpoint, _q, time.perf_counter() - _t0)
         raise DebuggerError("Cannot connect to x32dbg - is the plugin loaded?")

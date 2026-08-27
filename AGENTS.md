@@ -34,7 +34,7 @@ cmake --build build64 --config Release      # → build64\Release\MCPx64dbg.dp64
 
 - **x32dbg attaches only to 32-bit processes.** For a 64-bit target use x64dbg (same plugin build, `.dp64`). If a process is invisible in the attach dialog, that's why.
 - The HTTP server is thread-per-connection (`HandleClient`) with blocking accepted sockets and a 5s `SO_RCVTIMEO`. **Do not re-add a global mutex around request handling** — one stalled SDK call then blocks everything (that was a fixed regression). A stuck call blocks only its own worker; `/status` always responds.
-- `/debug/run|pause|step*` are guarded on `DbgIsDebugging()`/`DbgIsRunning()` and skip in illegal states. Keep those guards — issuing run-while-running used to wedge the server.
+- `/debug/run|pause|step*` are guarded on `DbgIsDebugging()`/`DbgIsRunning()` and skip in illegal states. Keep those guards — issuing run-while-running used to wedge the server. The SDK calls themselves are additionally wrapped in a 30s timeout (`RunWithTimeout` in `mcp_common.h`) so a stuck debuggee state (e.g. an unfocused/minimized window) can never pin the HTTP worker indefinitely; a timed-out call continues in the background and the response carries `"timed_out":true`. Client `REQUEST_TIMEOUT` (default 30s) has a matching helpful message on the Python side.
 - `/cmd` reports `"success":false` for informational commands like `help`/`ver` even though they ran (`DbgCmdExecDirect` returns 0 for them). Not a bug.
 - Breakpoint enable/disable must use bridge commands (`bpe`/`bpd`, `bphe`/`bphd`, …) — `BpSetFieldNumber(bpf_enabled, …)` does not work.
 - HW breakpoint slots (DR0–3) are auto-assigned; `bpf_hwslot` is read-only and the `bph` command takes no slot. Expose the assigned slot, don't try to pick it.

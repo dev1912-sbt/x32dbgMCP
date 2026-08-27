@@ -9,6 +9,10 @@
 #include <iomanip>
 #include <unordered_map>
 #include <type_traits>
+#include <atomic>
+#include <functional>
+#include <memory>
+#include <thread>
 
 // x64dbg SDK
 #include "pluginsdk/bridgemain.h"
@@ -130,6 +134,37 @@ inline bool GetParamBool(const std::unordered_map<std::string, std::string>& par
     if (!GetParam(params, key, value)) return false;
     out = (value == "true" || value == "1" || value == "yes");
     return true;
+}
+
+//=============================================================================
+// SDK Call Timeout Helper
+//=============================================================================
+
+enum class CallTimeoutResult {
+    Completed,
+    TimedOut
+};
+
+// Execute a blocking SDK call on a detached worker thread so it can be bounded.
+// The call itself is NOT interruptible (it keeps running in the background if
+// it exceeds the timeout); this only guarantees the HTTP worker answers within
+// timeoutMs instead of pinning the connection forever when a debugger/zombie
+// state leaves the SDK call stuck (e.g. a resume issued while the debuggee is
+// in an odd state). The result flag lives on the heap so the detached thread
+// never touches the (returning) caller's stack.
+inline CallTimeoutResult RunWithTimeout(std::function<void()> fn, DWORD timeoutMs) {
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread([fn = std::move(fn), done]() {
+        fn();
+        done->store(true);
+    }).detach();
+
+    DWORD waited = 0;
+    while (!done->load() && waited < timeoutMs) {
+        Sleep(25);
+        waited += 25;
+    }
+    return done->load() ? CallTimeoutResult::Completed : CallTimeoutResult::TimedOut;
 }
 
 #endif // MCP_COMMON_H

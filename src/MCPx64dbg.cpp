@@ -447,8 +447,16 @@ void HandleRequest(SOCKET client, const std::string& method, const std::string& 
             } else if (DbgIsRunning()) {
                 SendResponse(client, 200, "application/json", "{\"success\":true,\"skipped\":true,\"message\":\"Process is already running\"}");
             } else {
-                Script::Debug::Run();
-                SendResponse(client, 200, "application/json", "{\"success\":true}");
+                // The SDK call normally returns quickly, but a debuggee in an
+                // odd state (e.g. unfocused/minimized window) can leave it
+                // stuck indefinitely. Bound it so the HTTP worker never pins
+                // the connection; the call continues in the background.
+                CallTimeoutResult r = RunWithTimeout([]() { Script::Debug::Run(); }, 30000);
+                if (r == CallTimeoutResult::Completed)
+                    SendResponse(client, 200, "application/json", "{\"success\":true}");
+                else
+                    SendResponse(client, 200, "application/json",
+                        "{\"success\":true,\"timed_out\":true,\"message\":\"Tool executed, but the internal call timed out after 30 seconds. Please verify the current state.\"}");
             }
         }
         else if (path == "/debug/pause") {
@@ -457,8 +465,12 @@ void HandleRequest(SOCKET client, const std::string& method, const std::string& 
             } else if (!DbgIsRunning()) {
                 SendResponse(client, 200, "application/json", "{\"success\":true,\"skipped\":true,\"message\":\"Process is already paused\"}");
             } else {
-                Script::Debug::Pause();
-                SendResponse(client, 200, "application/json", "{\"success\":true}");
+                CallTimeoutResult r = RunWithTimeout([]() { Script::Debug::Pause(); }, 30000);
+                if (r == CallTimeoutResult::Completed)
+                    SendResponse(client, 200, "application/json", "{\"success\":true}");
+                else
+                    SendResponse(client, 200, "application/json",
+                        "{\"success\":true,\"timed_out\":true,\"message\":\"Tool executed, but the internal call timed out after 30 seconds. Please verify the current state.\"}");
             }
         }
         else if (path == "/debug/step" || path == "/debug/stepover" || path == "/debug/stepout") {
@@ -467,10 +479,15 @@ void HandleRequest(SOCKET client, const std::string& method, const std::string& 
             } else if (DbgIsRunning()) {
                 SendResponse(client, 200, "application/json", "{\"success\":false,\"error\":\"Must be paused to step\"}");
             } else {
-                if (path == "/debug/step") Script::Debug::StepIn();
-                else if (path == "/debug/stepover") Script::Debug::StepOver();
-                else Script::Debug::StepOut();
-                SendResponse(client, 200, "application/json", "{\"success\":true}");
+                CallTimeoutResult r;
+                if (path == "/debug/step") r = RunWithTimeout([]() { Script::Debug::StepIn(); }, 30000);
+                else if (path == "/debug/stepover") r = RunWithTimeout([]() { Script::Debug::StepOver(); }, 30000);
+                else r = RunWithTimeout([]() { Script::Debug::StepOut(); }, 30000);
+                if (r == CallTimeoutResult::Completed)
+                    SendResponse(client, 200, "application/json", "{\"success\":true}");
+                else
+                    SendResponse(client, 200, "application/json",
+                        "{\"success\":true,\"timed_out\":true,\"message\":\"Tool executed, but the internal call timed out after 30 seconds. Please verify the current state.\"}");
             }
         }
         else if (path == "/debug/events") {
